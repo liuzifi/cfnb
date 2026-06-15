@@ -748,10 +748,23 @@ def check_http_server(node_str, timeout, max_retries, retry_delay, method, conne
     for _ in range(test_rounds):
         try:
             start = time.time()
+            
+            # 根据 FORCE_DIRECT 动态设置代理
+            request_kwargs = {
+                "timeout": (connect_timeout, timeout),
+                "verify": False,
+                "allow_redirects": False,
+                "headers": headers
+            }
+            if FORCE_DIRECT:
+                request_kwargs["proxies"] = {"http": None, "https": None}
+                request_kwargs["trust_env"] = False
+
             if method.upper() == "HEAD":
-                resp = requests.head(url, timeout=(connect_timeout, timeout), verify=False, allow_redirects=False, headers=headers)
+                resp = requests.head(url, **request_kwargs)
             else:
-                resp = requests.get(url, timeout=(connect_timeout, timeout), verify=False, allow_redirects=False, headers=headers)
+                resp = requests.get(url, **request_kwargs)
+                
             lat = (time.time() - start) * 1000
             if resp.status_code != 400:
                 return (node_str, False, f"status_{resp.status_code}", 0.0, 0.0)
