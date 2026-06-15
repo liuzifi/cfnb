@@ -179,9 +179,10 @@ def load_config():
         "USE_GLOBAL_MODE": True,
         "GLOBAL_TOP_N": 15,
         "PER_COUNTRY_TOP_N": 1,
-        "BANDWIDTH_CANDIDATES": 90,
-        "TCP_PROBES": 3,
+        "BANDWIDTH_CANDIDATES": 150,
+        "TCP_PROBES": 1,
         "MIN_SUCCESS_RATE": 1.0,
+        "TCP_LATENCY_WEIGHT": 1.0,
         "TIMEOUT": 2.0,
         "SOCKET_DEFAULT_TIMEOUT": 3,
         "PROGRESS_PRINT_INTERVAL": 1,
@@ -214,6 +215,7 @@ def load_config():
         "OUTPUT_FILE": "ip.txt",
         "ENABLE_LOGGING": False,
         "LOG_FILE": "cfnb.log",
+        "FORCE_DIRECT": True,
         "TEST_AVAILABILITY": True,
         "AVAILABILITY_CHECK_API": "https://api.090227.xyz/check",
         "AVAILABILITY_TIMEOUT": 3,
@@ -232,6 +234,9 @@ def load_config():
         "HTTP_TEST_MAX_RETRIES": 2,
         "HTTP_TEST_RETRY_DELAY": 3,
         "HTTP_TEST_METHOD": "HEAD",
+        "HTTP_LATENCY_WEIGHT": 1.0,
+        "JITTER_WEIGHT": 1.0,
+        "HTTP_JITTER_SAMPLES": 3,
         "FILTER_IPV6_AVAILABILITY": True,
         "FILTER_BLOCKED_COUNTRIES_ENABLED": True,
         "BLOCKED_COUNTRIES": [
@@ -242,17 +247,18 @@ def load_config():
         "DNS_IP_RISK_FILTER_ENABLED": False,
         "DNS_IP_RISK_MAX_LEVEL": "高风险",
         "DNS_UPDATE_TARGET_COUNT": 15,
-        "BANDWIDTH_SIZE_MB": 0.5,
+        "BANDWIDTH_SIZE_MB": 1.0,
         "BANDWIDTH_TIMEOUT": 3,
         "BANDWIDTH_RETRY_MAX": 2,
         "BANDWIDTH_RETRY_DELAY": 3,
         "BANDWIDTH_URL_TEMPLATE": "https://speed.cloudflare.com/__down?bytes={bytes}",
         "BANDWIDTH_PROCESS_BUFFER": 2,
         "BANDWIDTH_CONNECT_TIMEOUT": 3,
-        "MAX_WORKERS": 200,
+        "SPEED_WEIGHT": 1.0,
+        "MAX_WORKERS": 300,
         "AVAILABILITY_WORKERS": 32,
         "FALLBACK_WORKERS": 32,
-        "BANDWIDTH_WORKERS": 10,
+        "BANDWIDTH_WORKERS": 3,
         "HTTP_TEST_WORKERS": 32,
         "DNS_UPDATE_MAX_RETRIES": 3,
         "DNS_UPDATE_RETRY_DELAY": 3,
@@ -266,6 +272,8 @@ def load_config():
         "AD_PERLINE_ENABLED": False,
         "AD_PERLINE_TEXT": "",
         "IP_TXT_SHOW_BANDWIDTH": False,
+        "IP_TXT_SHOW_HTTP_LATENCY": False,
+        "IP_TXT_SHOW_HTTP_JITTER": False,
         "IP_TXT_SHOW_LATENCY": False,
     }
 
@@ -277,13 +285,13 @@ def load_config():
     return config
 
 cfg = load_config()
-
 USE_GLOBAL_MODE = cfg["USE_GLOBAL_MODE"]
 GLOBAL_TOP_N = cfg["GLOBAL_TOP_N"]
 PER_COUNTRY_TOP_N = cfg["PER_COUNTRY_TOP_N"]
 BANDWIDTH_CANDIDATES = cfg["BANDWIDTH_CANDIDATES"]
 TCP_PROBES = cfg["TCP_PROBES"]
 MIN_SUCCESS_RATE = cfg["MIN_SUCCESS_RATE"]
+TCP_LATENCY_WEIGHT = cfg["TCP_LATENCY_WEIGHT"]
 TIMEOUT = cfg["TIMEOUT"]
 SOCKET_DEFAULT_TIMEOUT = cfg["SOCKET_DEFAULT_TIMEOUT"]
 PROGRESS_PRINT_INTERVAL = cfg["PROGRESS_PRINT_INTERVAL"]
@@ -316,6 +324,7 @@ FETCH_CONNECT_TIMEOUT = cfg["FETCH_CONNECT_TIMEOUT"]
 OUTPUT_FILE = cfg["OUTPUT_FILE"]
 ENABLE_LOGGING = cfg["ENABLE_LOGGING"]
 LOG_FILE = cfg["LOG_FILE"]
+FORCE_DIRECT = cfg["FORCE_DIRECT"]
 TEST_AVAILABILITY = cfg["TEST_AVAILABILITY"]
 AVAILABILITY_CHECK_API = cfg["AVAILABILITY_CHECK_API"]
 AVAILABILITY_TIMEOUT = cfg["AVAILABILITY_TIMEOUT"]
@@ -334,6 +343,9 @@ HTTP_TEST_INNER_RETRY_ENABLED = cfg["HTTP_TEST_INNER_RETRY_ENABLED"]
 HTTP_TEST_MAX_RETRIES = cfg["HTTP_TEST_MAX_RETRIES"]
 HTTP_TEST_RETRY_DELAY = cfg["HTTP_TEST_RETRY_DELAY"]
 HTTP_TEST_METHOD = cfg["HTTP_TEST_METHOD"]
+HTTP_LATENCY_WEIGHT = cfg["HTTP_LATENCY_WEIGHT"]
+JITTER_WEIGHT = cfg["JITTER_WEIGHT"]
+HTTP_JITTER_SAMPLES = cfg["HTTP_JITTER_SAMPLES"]
 FILTER_IPV6_AVAILABILITY = cfg["FILTER_IPV6_AVAILABILITY"]
 FILTER_BLOCKED_COUNTRIES_ENABLED = cfg["FILTER_BLOCKED_COUNTRIES_ENABLED"]
 BLOCKED_COUNTRIES = cfg["BLOCKED_COUNTRIES"]
@@ -347,6 +359,7 @@ BANDWIDTH_RETRY_DELAY = cfg["BANDWIDTH_RETRY_DELAY"]
 BANDWIDTH_URL_TEMPLATE = cfg["BANDWIDTH_URL_TEMPLATE"]
 BANDWIDTH_PROCESS_BUFFER = cfg["BANDWIDTH_PROCESS_BUFFER"]
 BANDWIDTH_CONNECT_TIMEOUT = cfg["BANDWIDTH_CONNECT_TIMEOUT"]
+SPEED_WEIGHT = cfg["SPEED_WEIGHT"]
 MAX_WORKERS = cfg["MAX_WORKERS"]
 AVAILABILITY_WORKERS = cfg["AVAILABILITY_WORKERS"]
 FALLBACK_WORKERS = cfg["FALLBACK_WORKERS"]
@@ -364,7 +377,14 @@ AD_FOOTER_LINES = cfg["AD_FOOTER_LINES"]
 AD_PERLINE_ENABLED = cfg["AD_PERLINE_ENABLED"]
 AD_PERLINE_TEXT = cfg["AD_PERLINE_TEXT"]
 IP_TXT_SHOW_BANDWIDTH = cfg["IP_TXT_SHOW_BANDWIDTH"]
+IP_TXT_SHOW_HTTP_LATENCY = cfg["IP_TXT_SHOW_HTTP_LATENCY"]
+IP_TXT_SHOW_HTTP_JITTER = cfg["IP_TXT_SHOW_HTTP_JITTER"]
 IP_TXT_SHOW_LATENCY = cfg["IP_TXT_SHOW_LATENCY"]
+
+if FORCE_DIRECT:
+    for key in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "ALL_PROXY", "all_proxy"):
+        os.environ.pop(key, None)
+    os.environ["NO_PROXY"] = "*"
 
 socket.setdefaulttimeout(SOCKET_DEFAULT_TIMEOUT)
 BANDWIDTH_URL = BANDWIDTH_URL_TEMPLATE.format(bytes=int(BANDWIDTH_SIZE_MB * 1024 * 1024))
@@ -467,19 +487,15 @@ def extract_country_code(label):
 
     tokens = re.split(r'[\s,;|/]+', label)
 
-    # 遍历每个 token，优先匹配三位/两位大写字母代码（后面不能紧跟英文字母）
     for token in tokens:
         token_cleaned = re.sub(r'^[\d\s\-_.|#]+', '', token.strip())
-        # 优先检查三位代码
         m3 = re.match(r'^([A-Z]{3})(?![A-Za-z])', token_cleaned)
         if m3 and m3.group(1) in ALPHA3_TO_ALPHA2:
             return ALPHA3_TO_ALPHA2[m3.group(1)]
-        # 再检查两位代码
         m2 = re.match(r'^([A-Z]{2})(?![A-Za-z])', token_cleaned)
         if m2 and m2.group(1) in CODE_SET:
             return m2.group(1)
 
-    # 对每个 token 尝试提取中文名
     for token in tokens:
         token_cleaned = re.sub(r'^[\d\s\-_.|#]+', '', token)
         token_no_emoji = re.sub(r'[\U0001F1E6-\U0001F1FF]', '', token_cleaned).strip()
@@ -490,7 +506,6 @@ def extract_country_code(label):
             if code:
                 return code
 
-    # 解码纯 emoji 国旗
     emoji_chars = [c for c in label if '\U0001F1E6' <= c <= '\U0001F1FF']
     if len(emoji_chars) >= 2 and len(emoji_chars) % 2 == 0:
         first = ord(emoji_chars[0]) - 0x1F1E6
@@ -502,7 +517,6 @@ def extract_country_code(label):
 
 
 def _parse_json_nodes(data):
-    """从 JSON 结构中递归提取节点"""
     nodes = []
     if isinstance(data, list):
         for item in data:
@@ -523,7 +537,6 @@ def _parse_json_nodes(data):
 
 
 def _query_country(ip, port):
-    """通过已有的可用性检测 API 查询 IP 的国家代码"""
     try:
         resp = requests.get(
             AVAILABILITY_CHECK_API,
@@ -541,7 +554,6 @@ def _query_country(ip, port):
 
 
 def _resolve_countries_batch(ipports):
-    """并发查询一批 IP 的国家代码"""
     results = {}
     total = len(ipports)
     completed = 0
@@ -571,7 +583,6 @@ def _resolve_countries_batch(ipports):
 
 
 def _parse_text_nodes(text):
-    """从纯文本中提取标准节点（内置备用 API 查询）"""
     nodes = []
     pending = []
 
@@ -608,7 +619,6 @@ def _parse_text_nodes(text):
 
 
 def parse_adaptive(text):
-    """自适应解析任意格式的节点列表文本（JSON、纯文本等）"""
     text = text.strip()
     if not text:
         return []
@@ -624,7 +634,6 @@ def parse_adaptive(text):
 
 
 def fetch_additional_source(url):
-    """拉取单个数据源并返回标准节点列表"""
     if not url:
         return []
 
@@ -687,7 +696,6 @@ def check_availability(node_str):
     best_exit_info = {}
     success = False
 
-    # 决定内部重试参数
     if AVAILABILITY_INNER_RETRY_ENABLED:
         max_attempts = AVAILABILITY_INNER_RETRY_MAX + 1
         retry_delay = AVAILABILITY_INNER_RETRY_DELAY
@@ -720,40 +728,41 @@ def check_availability(node_str):
 def check_http_server(node_str, timeout, max_retries, retry_delay, method, connect_timeout, inner_retry_enabled):
     m = IP_PORT_PATTERN.match(node_str)
     if not m:
-        return (node_str, False, "parse_error")
+        return (node_str, False, "parse_error", 0.0, 0.0)
     ip, port = m.group(1), m.group(2)
     url = f"http://{ip}:{port}/cdn-cgi/trace"
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
     }
 
-    if inner_retry_enabled:
-        max_attempts = max_retries + 1
-    else:
-        max_attempts = 1
-        retry_delay = 0
-
-    for attempt in range(max_attempts):
+    # 从配置读取抖动测试次数，至少 3 次
+    test_rounds = max(3, HTTP_JITTER_SAMPLES)
+    latencies = []
+    for _ in range(test_rounds):
         try:
+            start = time.time()
             if method.upper() == "HEAD":
                 resp = requests.head(url, timeout=(connect_timeout, timeout), verify=False, allow_redirects=False, headers=headers)
             else:
                 resp = requests.get(url, timeout=(connect_timeout, timeout), verify=False, allow_redirects=False, headers=headers)
+            lat = (time.time() - start) * 1000
             if resp.status_code != 400:
-                return (node_str, False, f"status_{resp.status_code}")
+                return (node_str, False, f"status_{resp.status_code}", 0.0, 0.0)
             server = resp.headers.get("server", "")
-            if server.lower().startswith("cloudflare"):
-                return (node_str, True, server)
-            else:
-                return (node_str, False, server)
-        except requests.exceptions.Timeout:
-            if attempt < max_attempts - 1:
-                time.sleep(retry_delay)
-                continue
-            else:
-                return (node_str, False, "timeout")
+            if not server.lower().startswith("cloudflare"):
+                return (node_str, False, server, 0.0, 0.0)
+            latencies.append(lat)
         except Exception:
-            return (node_str, False, "connection_error")
+            return (node_str, False, "connection_error", 0.0, 0.0)
+
+    if len(latencies) < test_rounds:
+        return (node_str, False, "not_enough_samples", 0.0, 0.0)
+
+    avg_lat = sum(latencies) / len(latencies)
+    variance = sum((l - avg_lat) ** 2 for l in latencies) / len(latencies)
+    jitter = variance ** 0.5  # 标准差，单位毫秒
+
+    return (node_str, True, "cloudflare", avg_lat, jitter)
 
 def availability_filter_candidates(candidates):
     if not TEST_AVAILABILITY or not candidates:
@@ -808,9 +817,8 @@ def availability_filter_with_retry(candidates):
     return candidates, {}, {}
 
 def http_server_filter(candidates, config):
-    """并发 HTTP 检测，支持整体失败重试，全部失败时降级并通知"""
     if not config.get("HTTP_TEST_ENABLED", False) or not candidates:
-        return candidates
+        return candidates, {}, {}
 
     timeout = HTTP_TEST_TIMEOUT
     connect_timeout = HTTP_TEST_CONNECT_TIMEOUT
@@ -827,6 +835,8 @@ def http_server_filter(candidates, config):
         print(f"\n对 {len(candidates)} 个候选节点进行 HTTP 二次筛选...")
 
         passed = []
+        http_latency_map = {}
+        http_jitter_map = {}
         total = len(candidates)
         completed = 0
         last_print = time.time()
@@ -837,10 +847,12 @@ def http_server_filter(candidates, config):
                 for node in candidates
             }
             for future in as_completed(future_map):
-                node_str, valid, server = future.result()
+                node_str, valid, server, http_lat, http_jitter = future.result()
                 completed += 1
                 if valid:
                     passed.append(node_str)
+                    http_latency_map[node_str] = http_lat
+                    http_jitter_map[node_str] = http_jitter
                 now = time.time()
                 if now - last_print >= PROGRESS_PRINT_INTERVAL or completed == total:
                     print(f"\r[HTTP检测] 进度：{completed}/{total} ({(completed/total)*100:.1f}%) 通过数量：{len(passed)}", end="", flush=True)
@@ -849,18 +861,17 @@ def http_server_filter(candidates, config):
         print()
         if passed:
             print(f"HTTP检测通过 {len(passed)} 个节点")
-            return passed
+            return passed, http_latency_map, http_jitter_map
         elif round_num < max_rounds:
             print(f"本轮 HTTP 检测通过率为 0%，等待 {round_delay} 秒后重试...")
             time.sleep(round_delay)
 
-    # 全部轮次失败，降级
     send_wxpusher_notification(
         content=f"HTTP检测经 {max_rounds} 轮重试后仍无节点通过，已降级使用过滤前列表。",
         summary="HTTP检测全部失败"
     )
     print(f"HTTP检测经 {max_rounds} 轮重试后仍无节点通过，降级使用过滤前候选列表。")
-    return candidates
+    return candidates, {}, {}
 
 def measure_bandwidth_curl(node_str):
     m = IP_PORT_PATTERN.match(node_str)
@@ -869,9 +880,13 @@ def measure_bandwidth_curl(node_str):
     ip, port = m.group(1), m.group(2)
 
     null_device = "NUL" if sys.platform == "win32" else "/dev/null"
+    expected_size = BANDWIDTH_SIZE_MB * 1024 * 1024
+
     curl_cmd = [
         "curl", "-s", "-o", null_device,
-        "-w", "%{size_download} %{time_total}",
+        "-w", "%{size_download} %{time_starttransfer} %{time_total}",
+        "-L",
+        "-H", "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
         "--resolve", f"speed.cloudflare.com:{port}:{ip}",
         "--connect-timeout", str(BANDWIDTH_CONNECT_TIMEOUT),
         "--max-time", str(BANDWIDTH_TIMEOUT),
@@ -880,14 +895,19 @@ def measure_bandwidth_curl(node_str):
     ]
 
     try:
-        result = subprocess.run(curl_cmd, capture_output=True, text=True, timeout=BANDWIDTH_TIMEOUT + BANDWIDTH_PROCESS_BUFFER)
+        result = subprocess.run(curl_cmd, capture_output=True, text=True,
+                                timeout=BANDWIDTH_TIMEOUT + BANDWIDTH_PROCESS_BUFFER)
         if result.returncode == 0 and result.stdout.strip():
             parts = result.stdout.strip().split()
-            if len(parts) >= 2:
+            if len(parts) >= 3:
                 size_bytes = float(parts[0])
-                time_total = float(parts[1])
-                if time_total > 0 and size_bytes > 0:
-                    speed_mbps = (size_bytes * 8) / (time_total * 1000 * 1000)
+                if size_bytes < expected_size:
+                    return (node_str, 0)
+                time_starttransfer = float(parts[1])
+                time_total = float(parts[2])
+                transfer_time = time_total - time_starttransfer
+                if transfer_time > 0:
+                    speed_mbps = (size_bytes * 8) / (transfer_time * 1000 * 1000)
                     return (node_str, speed_mbps)
     except Exception:
         pass
@@ -923,7 +943,7 @@ def bandwidth_filter(candidates):
     results.sort(key=lambda x: x[1], reverse=True)
     return results
 
-def batch_update_cloudflare_dns(ip_list, ip_info=None, full_bw_results=None, target_count=None, latency_map=None):
+def batch_update_cloudflare_dns(ip_list, ip_info=None, full_bw_results=None, target_count=None, latency_map=None, http_latency_map=None, http_jitter_map=None):
     if not CF_ENABLED:
         print("Cloudflare DNS 批量更新未启用。")
         return
@@ -931,8 +951,8 @@ def batch_update_cloudflare_dns(ip_list, ip_info=None, full_bw_results=None, tar
     if target_count is None:
         target_count = DNS_UPDATE_TARGET_COUNT
 
-    dns_content_list = []   # A模式存储IP，TXT模式存储"ip:port"
-    dns_node_list = []      # 原始节点串，仅用于展示信息
+    dns_content_list = []
+    dns_node_list = []
     filtered_by_port = 0
     filtered_by_ipv6 = 0
     filtered_by_country = 0
@@ -945,14 +965,12 @@ def batch_update_cloudflare_dns(ip_list, ip_info=None, full_bw_results=None, tar
         print(f"不支持的 DNS_RECORD_TYPE: {record_type}，已跳过 DNS 更新。")
         return
 
-    # ---------- 从带宽测速结果中筛选节点 ----------
     if full_bw_results and ip_info:
         blocked_set = set()
         if FILTER_BLOCKED_COUNTRIES_ENABLED:
             blocked_set = {c.upper() for c in BLOCKED_COUNTRIES}
 
         for node_str, speed in full_bw_results:
-            # 提取 IP 和端口
             if ':' not in node_str:
                 continue
             parts = node_str.split(':')
@@ -961,31 +979,26 @@ def batch_update_cloudflare_dns(ip_list, ip_info=None, full_bw_results=None, tar
             pure_ip = parts[0]
             port = parts[1].split('#')[0]
 
-            # === 端口过滤：统一强制要求 443 ===
             if port != '443':
                 filtered_by_port += 1
                 continue
 
-            # === IPv6 落地过滤 ===
             if FILTER_IPV6_AVAILABILITY:
                 stack = ip_info.get(node_str, "unknown")
                 if stack == "ipv6_only":
                     filtered_by_ipv6 += 1
                     continue
 
-            # === 国家黑名单过滤 ===
             if blocked_set and '#' in node_str:
                 country = node_str.split('#')[-1].upper()
                 if country in blocked_set:
                     filtered_by_country += 1
                     continue
 
-            # 备份未经过风险过滤的节点（用于回退）
             if DNS_IP_RISK_FILTER_ENABLED:
                 risk_fallback_ip_list.append(pure_ip)
                 risk_fallback_node_list.append(node_str)
 
-            # === IP 风险等级过滤 ===
             if DNS_IP_RISK_FILTER_ENABLED:
                 risk_level = get_ip_risk_level(pure_ip)
                 max_level = DNS_IP_RISK_MAX_LEVEL
@@ -993,23 +1006,20 @@ def batch_update_cloudflare_dns(ip_list, ip_info=None, full_bw_results=None, tar
                     filtered_by_risk += 1
                     continue
 
-            # 根据记录类型构建内容
             if record_type == "A":
                 dns_content_list.append(pure_ip)
-            else:   # TXT
+            else:
                 dns_content_list.append(f"{pure_ip}:{port}")
             dns_node_list.append(node_str)
 
             if len(dns_content_list) >= target_count:
                 break
 
-        # 风险等级检测全部失败时的回退处理
         if DNS_IP_RISK_FILTER_ENABLED and not dns_content_list and filtered_by_risk > 0:
             send_wxpusher_notification(
                 content="风险等级检测全部失败：所有候选节点均因风险等级过高或 API 查询失败被过滤，已回退到无风险等级过滤的候选列表。",
                 summary="风险等级检测全部失败"
             )
-            # 从备份中取前 target_count 个
             fallback_content = []
             fallback_nodes = []
             for i, (ip, node) in enumerate(zip(risk_fallback_ip_list, risk_fallback_node_list)):
@@ -1024,7 +1034,6 @@ def batch_update_cloudflare_dns(ip_list, ip_info=None, full_bw_results=None, tar
             dns_content_list = fallback_content
             dns_node_list = fallback_nodes
 
-        # 打印过滤统计
         filter_parts = []
         if filtered_by_port > 0:
             filter_parts.append(f"非443端口过滤({filtered_by_port}个)")
@@ -1037,7 +1046,6 @@ def batch_update_cloudflare_dns(ip_list, ip_info=None, full_bw_results=None, tar
         filter_str = " + ".join(filter_parts) if filter_parts else "无过滤"
         print(f"从 {len(full_bw_results)} 个测速节点中筛选出 {len(dns_content_list)} 个{'IP' if record_type=='A' else 'IP:端口'} 用于 DNS 更新（{filter_str}）。")
 
-    # 如果没有有效的测速结果，降级使用 ip_list（仅 IP，无端口信息）
     if not dns_content_list:
         if ip_list:
             print("未能从完整测速结果构建 DNS 列表，降级使用 ip.txt 中的 IP。")
@@ -1045,7 +1053,6 @@ def batch_update_cloudflare_dns(ip_list, ip_info=None, full_bw_results=None, tar
                 dns_content_list = ip_list
                 dns_node_list = ip_list
             else:
-                # TXT 模式下无法获得端口，跳过降级
                 print("TXT 模式需要端口信息，但降级数据中无端口，DNS 更新跳过。")
                 return
         else:
@@ -1054,7 +1061,6 @@ def batch_update_cloudflare_dns(ip_list, ip_info=None, full_bw_results=None, tar
             send_wxpusher_notification(content=msg, summary="DNS 更新跳过")
             return
 
-    # 去重
     seen = set()
     unique_content = []
     unique_nodes = []
@@ -1066,7 +1072,6 @@ def batch_update_cloudflare_dns(ip_list, ip_info=None, full_bw_results=None, tar
     dns_content_list = unique_content
     dns_node_list = unique_nodes
 
-    # 打印即将更新的内容
     print(f"\n准备将以下 {len(dns_content_list)} 个{'IP' if record_type=='A' else 'IP:端口'} 更新到 Cloudflare DNS（记录类型 {record_type}）:")
     speed_map = {}
     if full_bw_results:
@@ -1074,24 +1079,32 @@ def batch_update_cloudflare_dns(ip_list, ip_info=None, full_bw_results=None, tar
     for i, (content, node) in enumerate(zip(dns_content_list, dns_node_list), 1):
         speed = speed_map.get(node, 0)
         lat_ms = float('inf')
+        http_lat_ms = None
+        http_jitter_ms = None
         if latency_map and node in latency_map:
             lat_ms = latency_map[node] * 1000
+        if http_latency_map and node in http_latency_map:
+            http_lat_ms = http_latency_map[node]
+        if http_jitter_map and node in http_jitter_map:
+            http_jitter_ms = http_jitter_map[node]
+        line = f"{i}. {content} 速度 {speed:.2f} Mbps"
+        if http_lat_ms is not None:
+            line += f" 延迟 {http_lat_ms:.2f} ms"
+        if http_jitter_ms is not None:
+            line += f" 抖动 {http_jitter_ms:.2f} ms"
         if lat_ms != float('inf'):
-            print(f"{i}. {content} 速度 {speed:.2f} Mbps 延迟 {lat_ms:.2f} ms")
-        else:
-            print(f"{i}. {content} 速度 {speed:.2f} Mbps")
+            line += f" 延迟 {lat_ms:.2f} ms"
+        print(line)
 
     headers = {
         "Authorization": f"Bearer {CF_API_TOKEN}",
         "Content-Type": "application/json"
     }
 
-    # ===================== A 记录模式（多 IP 轮询）=====================
     if record_type == "A":
         for attempt in range(1, DNS_UPDATE_MAX_RETRIES + 1):
             print(f"\n[DNS 更新] 尝试 {attempt}/{DNS_UPDATE_MAX_RETRIES}...")
             try:
-                # 查询现有所有 A 记录
                 list_url = f"https://api.cloudflare.com/client/v4/zones/{CF_ZONE_ID}/dns_records?type=A&name={CF_DNS_RECORD_NAME}"
                 response = requests.get(list_url, headers=headers, timeout=(CF_DNS_CONNECT_TIMEOUT, CF_DNS_READ_TIMEOUT))
                 response.raise_for_status()
@@ -1123,33 +1136,28 @@ def batch_update_cloudflare_dns(ip_list, ip_info=None, full_bw_results=None, tar
 
                 success_msg = f"Cloudflare DNS 批量更新成功！已将 {CF_DNS_RECORD_NAME} 指向 {len(dns_content_list)} 个 IP。"
                 print(success_msg)
-                print("注意：DNS 解析将随机返回这些 IP 中的一个，实现负载均衡。")
                 return
 
             except Exception as e:
                 error_msg = f"[尝试 {attempt}/{DNS_UPDATE_MAX_RETRIES}] DNS 更新出错: {e}"
                 print(error_msg)
                 if attempt < DNS_UPDATE_MAX_RETRIES:
-                    print(f"等待 {DNS_UPDATE_RETRY_DELAY} 秒后重试...")
                     time.sleep(DNS_UPDATE_RETRY_DELAY)
                 else:
                     final_error = f"Cloudflare DNS 更新失败，已重试 {DNS_UPDATE_MAX_RETRIES} 次，错误：{e}"
                     print(final_error)
                     send_wxpusher_notification(content=final_error, summary="DNS 更新失败")
 
-    # ===================== TXT 记录模式（每个 IP:端口 独立一条记录）=====================
-    else:   # record_type == "TXT"
+    else:
         for attempt in range(1, DNS_UPDATE_MAX_RETRIES + 1):
             print(f"\n[TXT 记录更新] 尝试 {attempt}/{DNS_UPDATE_MAX_RETRIES}...")
             try:
-                # 1. 查询现有所有同名 TXT 记录
                 list_url = f"https://api.cloudflare.com/client/v4/zones/{CF_ZONE_ID}/dns_records?type=TXT&name={CF_DNS_RECORD_NAME}"
                 resp = requests.get(list_url, headers=headers, timeout=(CF_DNS_CONNECT_TIMEOUT, CF_DNS_READ_TIMEOUT))
                 resp.raise_for_status()
                 existing = resp.json().get('result', [])
                 deletes = [{"id": rec["id"]} for rec in existing]
 
-                # 2. 准备要创建的所有 TXT 记录
                 posts = [
                     {
                         "name": CF_DNS_RECORD_NAME,
@@ -1160,7 +1168,6 @@ def batch_update_cloudflare_dns(ip_list, ip_info=None, full_bw_results=None, tar
                     for content in dns_content_list
                 ]
 
-                # 3. 批量操作：删除旧记录 + 创建新记录
                 batch_url = f"https://api.cloudflare.com/client/v4/zones/{CF_ZONE_ID}/dns_records/batch"
                 payload = {"deletes": deletes, "posts": posts}
                 batch_resp = requests.post(batch_url, headers=headers, json=payload,
@@ -1177,7 +1184,6 @@ def batch_update_cloudflare_dns(ip_list, ip_info=None, full_bw_results=None, tar
                 error_msg = f"[尝试 {attempt}/{DNS_UPDATE_MAX_RETRIES}] TXT 更新出错: {e}"
                 print(error_msg)
                 if attempt < DNS_UPDATE_MAX_RETRIES:
-                    print(f"等待 {DNS_UPDATE_RETRY_DELAY} 秒后重试...")
                     time.sleep(DNS_UPDATE_RETRY_DELAY)
                 else:
                     final_error = f"Cloudflare TXT 记录更新失败，已重试 {DNS_UPDATE_MAX_RETRIES} 次，错误：{e}"
@@ -1235,7 +1241,6 @@ def sync_to_github():
             print(f"推送过程异常: {e}")
 
         if attempt < GITHUB_SYNC_MAX_RETRIES:
-            print(f"等待 {GITHUB_SYNC_RETRY_DELAY} 秒后重试...")
             time.sleep(GITHUB_SYNC_RETRY_DELAY)
 
     send_wxpusher_notification(
@@ -1248,16 +1253,21 @@ def write_ip_txt(final_nodes, output_file,
                  header_enabled, header_lines,
                  footer_enabled, footer_lines,
                  perline_enabled, perline_text,
-                 speed_map=None, latency_map=None):
-    """生成包含广告的 ip.txt"""
+                 speed_map=None, latency_map=None,
+                 http_latency_map=None, http_jitter_map=None):
     with open(output_file, "w", encoding="utf-8") as f:
         if header_enabled:
             for line in header_lines:
                 f.write(line + "\n")
         for node in final_nodes:
             line = node
+            # 按打印顺序：速度 -> HTTP延迟 -> HTTP抖动 -> TCP延迟
             if IP_TXT_SHOW_BANDWIDTH and speed_map and node in speed_map:
                 line += f" {speed_map[node]:.2f} Mbps"
+            if IP_TXT_SHOW_HTTP_LATENCY and http_latency_map and node in http_latency_map:
+                line += f" {http_latency_map[node]:.2f} ms"
+            if IP_TXT_SHOW_HTTP_JITTER and http_jitter_map and node in http_jitter_map:
+                line += f" {http_jitter_map[node]:.2f} ms"
             if IP_TXT_SHOW_LATENCY and latency_map and node in latency_map:
                 line += f" {latency_map[node]*1000:.2f} ms"
             if perline_enabled and perline_text:
@@ -1280,7 +1290,6 @@ def main():
     if FILTER_COUNTRIES_ENABLED:
         print(f"前置白名单过滤：启用，仅保留：{', '.join(ALLOWED_COUNTRIES)}")
 
-    # 统一从 ADDITIONAL_SOURCES 加载所有数据源
     nodes = []
     for source in ADDITIONAL_SOURCES:
         if not source.get("enabled", True):
@@ -1300,7 +1309,6 @@ def main():
                     nodes.append(n)
     print(f"合并后总计 {len(nodes)} 个节点。")
 
-    # 前置端口过滤
     if PRE_FILTER_PORT_ENABLED:
         before = len(nodes)
         nodes = [n for n in nodes if n.split(':')[1].split('#')[0] in PRE_FILTER_PORTS]
@@ -1311,7 +1319,6 @@ def main():
             print("前置端口过滤后无任何节点，退出程序。")
             sys.exit(0)
 
-    # 前置黑名单过滤
     if PRE_FILTER_BLOCKED_ENABLED and PRE_FILTER_BLOCKED_COUNTRIES:
         before = len(nodes)
         blocked_set = set(PRE_FILTER_BLOCKED_COUNTRIES)
@@ -1390,7 +1397,7 @@ def main():
         sys.exit(0)
 
     candidates_after_availability, avail_ip_info, avail_exit_details = availability_filter_with_retry(candidates)
-    candidates_after_http = http_server_filter(candidates_after_availability, cfg)
+    candidates_after_http, http_latency_map, http_jitter_map = http_server_filter(candidates_after_availability, cfg)
 
     bw_results = []
     for attempt in range(1, BANDWIDTH_RETRY_MAX + 1):
@@ -1417,37 +1424,60 @@ def main():
                 for node_str, _, _ in nodes_sorted[:PER_COUNTRY_TOP_N]:
                     final_selected.append(node_str)
     else:
+        speed_map = {node: speed for node, speed in bw_results}
+        scored_nodes = []
+        for node, speed in bw_results:
+            tcp_lat = latency_map.get(node, 999.0)
+            http_lat = http_latency_map.get(node, 999999.0)
+            http_jitter = http_jitter_map.get(node, 999999.0)
+            http_lat_sec = http_lat / 1000.0
+            http_jitter_sec = http_jitter / 1000.0
+            penalty = 1.0 + TCP_LATENCY_WEIGHT * tcp_lat + HTTP_LATENCY_WEIGHT * http_lat_sec + JITTER_WEIGHT * http_jitter_sec
+            score = (SPEED_WEIGHT * speed) / penalty
+            scored_nodes.append((node, score, speed, tcp_lat, http_lat))
+
+        scored_nodes.sort(key=lambda x: x[1], reverse=True)
+
         if USE_GLOBAL_MODE:
-            final_selected = [node for node, _ in bw_results[:GLOBAL_TOP_N]]
+            final_selected = [item[0] for item in scored_nodes[:GLOBAL_TOP_N]]
         else:
-            country_speed_nodes = defaultdict(list)
-            for node, speed in bw_results:
+            country_scored = defaultdict(list)
+            for item in scored_nodes:
+                node, score, speed, tcp_lat, http_lat = item
                 country = node.split('#')[-1] if '#' in node else ''
                 if country:
-                    country_speed_nodes[country].append((node, speed))
+                    country_scored[country].append(item)
             final_selected = []
-            for country, nodes in country_speed_nodes.items():
-                for node, speed in nodes[:PER_COUNTRY_TOP_N]:
-                    final_selected.append(node)
-            speed_map = {node: speed for node, speed in bw_results}
-            final_selected.sort(key=lambda x: speed_map.get(x, 0), reverse=True)
+            for country, items in country_scored.items():
+                items.sort(key=lambda x: x[1], reverse=True)
+                for item in items[:PER_COUNTRY_TOP_N]:
+                    final_selected.append(item[0])
+            score_dict = {item[0]: item[1] for item in scored_nodes}
+            final_selected.sort(key=lambda n: score_dict.get(n, 0), reverse=True)
 
         print("\n================ 最终优选节点 ================")
-        speed_map = {node: speed for node, speed in bw_results}
         for i, node in enumerate(final_selected, 1):
             speed = speed_map.get(node, 0)
-            lat_sec = latency_map.get(node, float('inf'))
-            if lat_sec != float('inf'):
-                print(f"{i}. {node} 速度 {speed:.2f} Mbps 延迟 {lat_sec*1000:.2f} ms")
-            else:
-                print(f"{i}. {node} 速度 {speed:.2f} Mbps")
+            tcp_lat = latency_map.get(node, float('inf'))
+            http_lat = http_latency_map.get(node, None)
+            http_jitter = http_jitter_map.get(node, None)
+            line = f"{i}. {node} 速度 {speed:.2f} Mbps"
+            if http_lat is not None:
+                line += f" 延迟 {http_lat:.2f} ms"
+            if http_jitter is not None:
+                line += f" 抖动 {http_jitter:.2f} ms"
+            if tcp_lat != float('inf'):
+                line += f" 延迟 {tcp_lat*1000:.2f} ms"
+            print(line)
 
     write_ip_txt(final_selected, OUTPUT_FILE,
                  AD_HEADER_ENABLED, AD_HEADER_LINES,
                  AD_FOOTER_ENABLED, AD_FOOTER_LINES,
                  AD_PERLINE_ENABLED, AD_PERLINE_TEXT,
                  speed_map=speed_map,
-                 latency_map=latency_map)
+                 latency_map=latency_map,
+                 http_latency_map=http_latency_map,
+                 http_jitter_map=http_jitter_map)
     print(f"\n结果已保存到 {OUTPUT_FILE}（共 {len(final_selected)} 个节点）")
 
     ip_list = [node.split(':')[0] for node in final_selected]
@@ -1457,7 +1487,9 @@ def main():
         ip_info=avail_ip_info,
         full_bw_results=bw_results,
         target_count=None,
-        latency_map=latency_map
+        latency_map=latency_map,
+        http_latency_map=http_latency_map,
+        http_jitter_map=http_jitter_map
     )
 
     sync_to_github()
